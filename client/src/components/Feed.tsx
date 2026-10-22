@@ -207,7 +207,7 @@ export function Feed({ navigate }: FeedProps) {
                   {currentPending.status === 'queued' ? 'Waiting for an encoder' : 'Preparing your clip'}
                 </h2>
                 <p className="mt-2 text-sm text-white/50">
-                  Creating 240p, 360p and 720p versions.
+                  Creating adaptive renditions up to full resolution.
                 </p>
                 <div className="mt-5 h-1.5 w-52 overflow-hidden rounded-full bg-white/10">
                   <div
@@ -233,7 +233,8 @@ export function Feed({ navigate }: FeedProps) {
                 </div>
                 <h2 className="mt-5 text-xl font-bold">Your feed is empty</h2>
                 <p className="mt-2 max-w-[250px] text-sm leading-relaxed text-white/50">
-                  Upload a video and ClipLoop will create 240p, 360p and 720p streams for it.
+                  Upload a video and ClipLoop will create adaptive HLS renditions for it, topped with a
+                  full-resolution stream.
                 </p>
                 <button
                   type="button"

@@ -82,6 +82,9 @@ export function VideoCard({
   )
 
   const heights = Array.from(new Set(levels.map((level) => level.height))).sort((a, b) => a - b)
+  const topHeight = heights.length > 0 ? heights[heights.length - 1] : 0
+  const renditionLabel = (height: number) => (height > 0 && height === topHeight ? 'Full' : `${height}p`)
+  const qualityLabel = quality === 'auto' ? 'Auto' : renditionLabel(quality)
 
   const attemptPlay = useCallback(() => {
     const videoEl = videoRef.current
@@ -245,8 +248,6 @@ export function VideoCard({
     }
   }
 
-  const qualityLabel = quality === 'auto' ? 'Auto' : `${quality}p`
-
   return (
     <section
       ref={sectionRef}
@@ -332,6 +333,7 @@ export function VideoCard({
                 </p>
                 {(['auto', ...heights.slice().reverse()] as const).map((option) => {
                   const activeOption = option === 'auto' ? quality === 'auto' : quality === option
+                  const optionLabel = option === 'auto' ? 'Auto' : renditionLabel(Number(option))
                   return (
                     <button
                       key={option}
@@ -346,7 +348,7 @@ export function VideoCard({
                           : 'text-white/70 hover:bg-white/10 hover:text-white'
                       }`}
                     >
-                      {option === 'auto' ? 'Auto' : `${option}p`}
+                      {optionLabel}
                       {activeOption && <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />}
                     </button>
                   )
@@ -396,12 +398,12 @@ export function VideoCard({
           </div>
 
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {(video.variants.length > 0 ? video.variants : ['240p', '360p', '720p']).map((variant) => (
+            {(video.variants.length > 0 ? video.variants : ['240p', '360p', '720p', '1080p', 'full']).map((variant) => (
               <span
                 key={variant}
                 className="rounded-md border border-white/10 bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white/55"
               >
-                {variant}
+                {variant === 'full' ? 'Full' : variant}
               </span>
             ))}
           </div>

@@ -58,9 +58,10 @@ export function useHls(
     const hls = new Hls({
       maxBufferLength: 24,
       backBufferLength: 10,
-      // 240p, 360p, 720p → start on the highest rendition, then let ABR
-      // downgrade if the network can't keep up.
-      startLevel: 2,
+      // Start on the highest rendition available in the master playlist, then let
+      // ABR downgrade if the network can't keep up. The target level is resolved
+      // in onManifestParsed once the real heights are known.
+      startLevel: -1,
       enableWorker: true,
     })
     hlsRef.current = hls
@@ -74,6 +75,8 @@ export function useHls(
         }))
         .filter((level) => level.height > 0)
       setLevels(nextLevels)
+      // Begin on the full-resolution rendition, then let ABR pick.
+      hls.startLevel = nextLevels.length > 0 ? nextLevels.length - 1 : 0
     })
 
     hls.on(Hls.Events.ERROR, (_event, data) => {

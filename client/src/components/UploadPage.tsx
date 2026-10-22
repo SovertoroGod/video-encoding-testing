@@ -210,14 +210,14 @@ export function UploadPage({ navigate }: UploadPageProps) {
         </div>
         <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">Drop a clip. Get a feed.</h1>
         <p className="mt-2 max-w-md text-sm leading-relaxed text-white/50">
-          Your video is processed into 240p, 360p and 720p HLS streams, then plays in a
+          Your video is transcoded into adaptive HLS renditions up to full resolution, then plays in a
           TikTok-style vertical feed.
         </p>
 
         <div className="mt-6 grid grid-cols-3 gap-2">
           {[
             { icon: Upload, label: 'Upload' },
-            { icon: Sparkles, label: '3 renditions' },
+            { icon: Sparkles, label: 'Adaptive' },
             { icon: Play, label: 'Watch' },
           ].map(({ icon: Icon, label }, index) => (
             <div
@@ -403,7 +403,7 @@ export function UploadPage({ navigate }: UploadPageProps) {
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="inline-flex items-center gap-1 text-[11px] text-white/45">
                       <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                      240p · 360p · 720p ready
+                      240p · 360p · 720p · 1080p · Full ready
                     </span>
                     {selected.duration && (
                       <span className="text-[11px] text-white/35">
@@ -420,7 +420,7 @@ export function UploadPage({ navigate }: UploadPageProps) {
                     <p className="mt-1.5 text-[11px] text-white/40">
                       {selected.status === 'queued'
                         ? 'Waiting for an encoder…'
-                        : 'Creating 240p, 360p and 720p streams…'}
+                        : 'Creating adaptive renditions…'}
                     </p>
                     <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/10">
                       <div
@@ -572,8 +572,8 @@ export function UploadPage({ navigate }: UploadPageProps) {
         </section>
 
         <p className="mt-8 text-center text-[11px] leading-relaxed text-white/25">
-          Uploads are stored locally. Each ready video keeps its original file plus 240p, 360p and
-          720p HLS renditions.
+          Uploads are stored locally. Each ready video keeps its original file plus adaptive HLS
+          renditions (240p / 360p / 720p / 1080p and full resolution) up to the source quality.
         </p>
       </main>
 

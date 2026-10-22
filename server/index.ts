@@ -70,8 +70,41 @@ function serializeVideo(row: VideoRow) {
     createdAt: row.created_at,
     posterUrl: row.poster_path ? `/api/hls/${row.id}/poster.jpg` : null,
     playbackUrl: row.status === 'ready' ? `/api/hls/${row.id}/master.m3u8` : null,
-    variants: row.status === 'ready' ? ['240p', '360p', '720p'] : [],
+    variants: row.status === 'ready' ? variantsFor(row) : [],
   }
+}
+
+function variantsFor(row: VideoRow): string[] {
+  if (row.status !== 'ready') return []
+
+  if (row.variants) {
+    try {
+      const parsed = JSON.parse(row.variants) as unknown
+      if (Array.isArray(parsed)) {
+        const names = parsed.filter((name): name is string => typeof name === 'string')
+        if (names.length > 0) return names
+      }
+    } catch {
+      // Unparseable value → fall through to the disk scan.
+    }
+  }
+
+  // Legacy rows written before the `variants` column existed report the renditions
+  // that actually exist on disk, so they never advertise rungs that were never made.
+  const dir = videoDir(row.id)
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+    const names = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((name) => fs.existsSync(path.join(dir, name, 'index.m3u8')))
+      .sort()
+    if (names.length > 0) return names
+  } catch {
+    // Video directory is gone (e.g. deleted concurrently) → empty list.
+  }
+
+  return []
 }
 
 const asyncHandler =

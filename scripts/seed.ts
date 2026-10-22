@@ -21,16 +21,16 @@ interface DemoClip {
 const clips: DemoClip[] = [
   {
     originalName: 'aurora-demo.mp4',
-    caption: 'Aurora drift — one upload, three renditions.',
+    caption: 'Aurora drift — one upload, every quality.',
     source:
-      'gradients=s=720x1280:d=9:speed=0.08:c0=0x020617:c1=0x4c1d95:c2=0x0e7490:n=3',
+      'gradients=s=1080x1920:d=9:speed=0.08:c0=0x020617:c1=0x4c1d95:c2=0x0e7490:n=3',
     tone: 196,
   },
   {
     originalName: 'sunset-demo.mp4',
     caption: 'Sunset loop. Swipe through the feed.',
     source:
-      'gradients=s=720x1280:d=9:speed=0.06:c0=0x1c1917:c1=0xbe123c:c2=0xf59e0b:n=3',
+      'gradients=s=1080x1920:d=9:speed=0.06:c0=0x1c1917:c1=0xbe123c:c2=0xf59e0b:n=3',
     tone: 294,
   },
 ]
@@ -93,7 +93,7 @@ async function main() {
       size: fs.statSync(filePath).size,
     })
 
-    console.log(`Encoding 240p / 360p / 720p for ${clip.originalName}…`)
+    console.log(`Encoding adaptive renditions (240p / 360p / 720p / 1080p / full) for ${clip.originalName}…`)
     await processVideo(id)
     const row = getVideo(id)
     if (row?.status !== 'ready') {

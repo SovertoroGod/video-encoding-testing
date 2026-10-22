@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import ffmpegStatic from 'ffmpeg-static'
 import ffprobeStatic from 'ffprobe-static'
 import { getVideo, updateVideo } from './db.ts'
+import { buildLadder, type Rendition } from './ladder.ts'
 import { videoDir } from './paths.ts'
 
 const execFileAsync = promisify(execFile)
@@ -25,19 +26,22 @@ export interface ProbeResult {
   width: number
   height: number
   hasAudio: boolean
+  /** Source video bitrate in bits per second (0 when unknown) */
+  bitrate: number
 }
 
 interface FfprobeStream {
   codec_type?: string
   width?: number
   height?: number
+  bit_rate?: number
   tags?: Record<string, string>
   side_data_list?: Array<{ rotation?: number }>
 }
 
 interface FfprobeOutput {
   streams?: FfprobeStream[]
-  format?: { duration?: string }
+  format?: { duration?: string; bit_rate?: string }
 }
 
 export async function probeVideo(filePath: string): Promise<ProbeResult> {
@@ -74,20 +78,26 @@ export async function probeVideo(filePath: string): Promise<ProbeResult> {
     ;[width, height] = [height, width]
   }
 
+  const bitrate = video.bit_rate ? Number(video.bit_rate) : Number(data.format?.bit_rate ?? 0) || 0
+
   return {
     duration: Number(data.format?.duration ?? 0) || 0,
     width,
     height,
     hasAudio: data.streams?.some((stream) => stream.codec_type === 'audio') ?? false,
+    bitrate,
   }
 }
 
 function ffmpegArgs(input: string, outDir: string, meta: ProbeResult): string[] {
+  const renditions = buildLadder(meta.width, meta.height, meta.bitrate)
+
+  const inputLabels = renditions.map((_, index) => `v${index}in`)
   const filter = [
-    '[0:v]split=3[v240in][v360in][v720in]',
-    '[v240in]scale=-2:240,setsar=1[v240]',
-    '[v360in]scale=-2:360,setsar=1[v360]',
-    '[v720in]scale=-2:720,setsar=1[v720]',
+    `[0:v]split=${renditions.length}[${inputLabels.join('][')}]`,
+    ...renditions.map(
+      (rendition, index) => `[v${index}in]scale=-2:${rendition.height},setsar=1[v${index}]`,
+    ),
   ].join(';')
 
   const args = [
@@ -100,15 +110,12 @@ function ffmpegArgs(input: string, outDir: string, meta: ProbeResult): string[] 
     input,
     '-filter_complex',
     filter,
-    '-map',
-    '[v240]',
   ]
 
-  if (meta.hasAudio) args.push('-map', '0:a:0')
-  args.push('-map', '[v360]')
-  if (meta.hasAudio) args.push('-map', '0:a:0')
-  args.push('-map', '[v720]')
-  if (meta.hasAudio) args.push('-map', '0:a:0')
+  renditions.forEach((rendition, index) => {
+    args.push('-map', `[v${index}]`)
+    if (meta.hasAudio) args.push('-map', '0:a:0')
+  })
 
   args.push(
     '-sn',
@@ -124,42 +131,41 @@ function ffmpegArgs(input: string, outDir: string, meta: ProbeResult): string[] 
     '0',
     '-force_key_frames',
     'expr:gte(t,n_forced*4)',
-    '-b:v:0',
-    '400k',
-    '-maxrate:v:0',
-    '450k',
-    '-bufsize:v:0',
-    '800k',
-    '-b:v:1',
-    '900k',
-    '-maxrate:v:1',
-    '1000k',
-    '-bufsize:v:1',
-    '1600k',
-    '-b:v:2',
-    '2500k',
-    '-maxrate:v:2',
-    '2800k',
-    '-bufsize:v:2',
-    '4200k',
   )
 
+  renditions.forEach((rendition, index) => {
+    const kbps = (value: number) => `${Math.round(value / 1000)}k`
+    const rateArgs =
+      rendition.crf !== undefined
+        ? [
+            '-crf:v:' + index,
+            String(rendition.crf),
+            '-maxrate:v:' + index,
+            kbps(rendition.maxrate),
+            '-bufsize:v:' + index,
+            kbps(rendition.bufsize),
+          ]
+        : [
+            '-b:v:' + index,
+            kbps(rendition.videoBitrate),
+            '-maxrate:v:' + index,
+            kbps(rendition.maxrate),
+            '-bufsize:v:' + index,
+            kbps(rendition.bufsize),
+          ]
+    args.push(...rateArgs)
+  })
+
   if (meta.hasAudio) {
-    args.push(
-      '-c:a',
-      'aac',
-      '-ac',
-      '2',
-      '-ar',
-      '48000',
-      '-b:a:0',
-      '64k',
-      '-b:a:1',
-      '96k',
-      '-b:a:2',
-      '128k',
-    )
+    args.push('-c:a', 'aac', '-ac', '2', '-ar', '48000')
+    renditions.forEach((rendition, index) => {
+      args.push('-b:a:' + index, `${Math.round(rendition.audioBitrate / 1000)}k`)
+    })
   }
+
+  const varStreamMap = renditions
+    .map((rendition, index) => `v:${index}${meta.hasAudio ? `,a:${index}` : ''},name:${rendition.name}`)
+    .join(' ')
 
   args.push(
     '-max_muxing_queue_size',
@@ -179,9 +185,7 @@ function ffmpegArgs(input: string, outDir: string, meta: ProbeResult): string[] 
     '-master_pl_name',
     'master.m3u8',
     '-var_stream_map',
-    meta.hasAudio
-      ? 'v:0,a:0,name:240p v:1,a:1,name:360p v:2,a:2,name:720p'
-      : 'v:0,name:240p v:1,name:360p v:2,name:720p',
+    varStreamMap,
     path.join(outDir, '%v', 'index.m3u8'),
   )
 
@@ -278,11 +282,14 @@ export async function processVideo(id: string): Promise<void> {
 
   try {
     await rm(outDir, { recursive: true, force: true })
-    await Promise.all(
-      ['240p', '360p', '720p'].map((variant) => mkdir(path.join(outDir, variant), { recursive: true })),
-    )
 
     const meta = await probeVideo(row.original_path)
+    const renditions = buildLadder(meta.width, meta.height, meta.bitrate)
+
+    for (const rendition of renditions) {
+      await mkdir(path.join(outDir, rendition.name), { recursive: true })
+    }
+
     updateVideo(id, {
       duration: meta.duration,
       width: meta.width,
@@ -312,8 +319,11 @@ export async function processVideo(id: string): Promise<void> {
       progress: 100,
       hls_path: master,
       error: null,
+      variants: JSON.stringify(renditions.map((rendition) => rendition.name)),
     })
-    console.log(`[transcode] ${id} ready (${meta.width}x${meta.height}, ${meta.duration.toFixed(1)}s)`)
+    console.log(
+      `[transcode] ${id} ready (${meta.width}x${meta.height}, ${meta.duration.toFixed(1)}s, ${renditions.length} renditions)`,
+    )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error(`[transcode] ${id} failed: ${message}`)

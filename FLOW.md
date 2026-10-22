@@ -1,6 +1,6 @@
 # ClipLoop — Detailed Project Flow
 
-ClipLoop is a local-first, TikTok-style vertical video app. A user uploads a video; the server encodes it into **240p, 360p, and 720p HLS renditions**; the React frontend plays the adaptive stream in a full-screen vertical feed.
+ClipLoop is a local-first, TikTok-style vertical video app. A user uploads a video; the server encodes it into **240p / 360p / 720p / 1080p and Full (source resolution) HLS renditions**; the React frontend plays the adaptive stream in a full-screen vertical feed.
 
 - **Frontend:** React 19 + Vite + TypeScript + Tailwind 4 + hls.js
 - **Backend:** Express 5 + multer + ffmpeg-static / ffprobe-static
@@ -23,7 +23,9 @@ ClipLoop is a local-first, TikTok-style vertical video app. A user uploads a vid
 │  hls.js ──────► /api/hls/<id>/master.m3u8                        │
 │                  ├── 240p/index.m3u8 + segments                  │
 │                  ├── 360p/index.m3u8 + segments                  │
-│                  └── 720p/index.m3u8 + segments                  │
+│                  ├── 720p/index.m3u8 + segments                  │
+│                  ├── 1080p/index.m3u8 + segments                  │
+│                  └── full/index.m3u8 + segments                  │
 └──────────────────────────────┬───────────────────────────────────┘
                                │ HTTP (JSON + multipart + HLS files)
 ┌──────────────────────────────▼───────────────────────────────────┐
@@ -111,6 +113,7 @@ Table: `videos`
 | `error` | TEXT | Failure reason |
 | `views` | INTEGER | Incremented by playback |
 | `created_at` | INTEGER | Unix milliseconds; feed sorts DESC |
+| `variants` | TEXT (JSON) | Rendition names produced for this video, e.g. `["240p","360p","720p","1080p","full"]` |
 
 SQLite is opened in WAL mode. On server boot, any row left in `processing` is reset to `queued` and re-enqueued.
 
@@ -194,8 +197,10 @@ Worker: `processVideo(id)` in `server/transcode.ts`
      storage/videos/<id>/240p/
      storage/videos/<id>/360p/
      storage/videos/<id>/720p/
+     storage/videos/<id>/1080p/
+     storage/videos/<id>/full/
 5. ffprobe:
-     duration, width, height, rotation, hasAudio
+     duration, width, height, rotation, hasAudio, bitrate
    Rotation of 90/270 swaps width/height
 6. Extract poster:
      seek min(1s, duration/2)
@@ -218,45 +223,59 @@ On any failure:
 
 ### 5.3 FFmpeg command shape
 
-The source is decoded once, split, scaled to three heights, and encoded in one pass:
+The source is decoded once, split, scaled, and encoded in one pass. The rendition ladder is derived from the probed source dimensions (`server/ladder.ts`) and always ends with a `full` rendition at the source resolution (capped by `MAX_RENDITION_HEIGHT`).
 
 ```bash
 ffmpeg -i <original> \
   -filter_complex \
-    "[0:v]split=3[v240in][v360in][v720in];\
-     [v240in]scale=-2:240,setsar=1[v240];\
-     [v360in]scale=-2:360,setsar=1[v360];\
-     [v720in]scale=-2:720,setsar=1[v720]" \
-  -map "[v240]" -map 0:a:0 \
-  -map "[v360]" -map 0:a:0 \
-  -map "[v720]" -map 0:a:0 \
+    "[0:v]split=4[v0in][v1in][v2in][v3in];\
+     [v0in]scale=-2:240,setsar=1[v0];\
+     [v1in]scale=-2:360,setsar=1[v1];\
+     [v2in]scale=-2:720,setsar=1[v2];\
+     [v3in]scale=-2:1080,setsar=1[v3]" \
+  -map "[v0]" -map 0:a:0 \
+  -map "[v1]" -map 0:a:0 \
+  -map "[v2]" -map 0:a:0 \
+  -map "[v3]" -map 0:a:0 \
   -c:v libx264 -preset veryfast -profile:v main -pix_fmt yuv420p \
   -sc_threshold 0 -force_key_frames "expr:gte(t,n_forced*4)" \
-  -b:v:0 400k -b:v:1 900k -b:v:2 2500k \
-  -c:a aac -b:a:0 64k -b:a:1 96k -b:a:2 128k \
+  -b:v:0 400k -b:v:1 900k -b:v:2 2500k -b:v:3 4500k \
+  -c:a aac -b:a:0 64k -b:a:1 96k -b:a:2 128k -b:a:3 160k \
   -f hls -hls_time 4 -hls_playlist_type vod \
   -hls_flags independent_segments \
   -hls_segment_filename "<out>/%v/segment_%03d.ts" \
   -master_pl_name master.m3u8 \
-  -var_stream_map "v:0,a:0,name:240p v:1,a:1,name:360p v:2,a:2,name:720p" \
+  -var_stream_map "v:0,a:0,name:240p v:1,a:1,name:360p v:2,a:2,name:720p v:3,a:3,name:1080p" \
   "<out>/%v/index.m3u8"
 ```
+
+To add the top `full` rendition (source resolution), append a fourth split branch and switch the split count and stream map accordingly; the top branch is encoded with `-crf 20 -maxrate … -bufsize …` instead of a bitrate, at the source height.
 
 If the source has **no audio**:
 
 - no audio streams are mapped
-- `var_stream_map` becomes `v:0,name:240p v:1,name:360p v:2,name:720p`
+- `var_stream_map` becomes `v:0,name:240p v:1,name:360p v:2,name:720p …`
 - the generated playlists are video-only, which browsers still play
 
 ### 5.4 Encoding ladder
+
+`server/ladder.ts` builds the ladder for every upload from the probed source. A 1080×1920 source produces:
 
 | Rendition | Height | Video bitrate | Maxrate | Audio | Approx. master bandwidth |
 | --- | --- | --- | --- | --- | --- |
 | 240p | 240 | 400 kbps | 450 kbps | 64 kbps | ~510 kbps |
 | 360p | 360 | 900 kbps | 1000 kbps | 96 kbps | ~1.1 Mbps |
 | 720p | 720 | 2500 kbps | 2800 kbps | 128 kbps | ~2.9 Mbps |
+| 1080p | 1080 | 4500 kbps | 5000 kbps | 160 kbps | ~5.1 Mbps |
+| Full | source height | CRF 20 (source bitrate × 1.2 maxrate) | bitrate-derived | 192 kbps | ~6–8 Mbps |
 
-Width is automatic and always even (`scale=-2:<height>`). Portrait, square, and landscape sources all work. Sources smaller than a target are upscaled.
+Width is automatic and always even (`scale=-2:<height>`). Portrait, square, and landscape sources all work.
+
+Rules:
+
+- Fixed rungs (240/360/720/1080) are produced **only** when their height is smaller than the source height — nothing is ever upscaled
+- The `Full` rung is always present and equals the source resolution (capped by `MAX_RENDITION_HEIGHT`, default 2160p); it is encoded in constant-quality mode (`-crf 20`) with a maxrate of ~1.2× the source bitrate, so a high-quality source stays high-quality
+- The ladder is a pure function of `(width, height, bitrate)`, so `server/index.ts` can derive the same names from the stored dimensions for the API response
 
 ### 5.5 Progress reporting
 
@@ -287,11 +306,15 @@ storage/videos/<id>/
 │   └── ...
 ├── 360p/
 │   └── ...
-└── 720p/
+├── 720p/
+│   └── ...
+├── 1080p/
+│   └── ...
+└── full/          ← source resolution
     └── ...
 ```
 
-`master.m3u8` example:
+`master.m3u8` example (1080×1920 source):
 
 ```text
 #EXTM3U
@@ -303,6 +326,12 @@ storage/videos/<id>/
 
 #EXT-X-STREAM-INF:BANDWIDTH=2890800,RESOLUTION=406x720,CODECS="avc1.4d401e,mp4a.40.2"
 720p/index.m3u8
+
+#EXT-X-STREAM-INF:BANDWIDTH=5126000,RESOLUTION=608x1080,CODECS="avc1.4d401f,mp4a.40.2"
+1080p/index.m3u8
+
+#EXT-X-STREAM-INF:BANDWIDTH=7911200,RESOLUTION=1080x1920,CODECS="avc1.4d4028,mp4a.40.2"
+full/index.m3u8
 ```
 
 ---
@@ -344,9 +373,10 @@ If MSE is supported:
   use hls.js (preferred → gives manual quality control)
   - maxBufferLength: 24s
   - backBufferLength: 10s
-  - startLevel: 2 (720p)
+  - startLevel: -1 (auto), overridden on MANIFEST_PARSED to the highest level
   - enableWorker: true
   - on manifest parsed: expose levels [{index, height, bitrate}]
+                      and set hls.startLevel = levels.length - 1
   - on fatal media error: recoverMediaError()
   - on other fatal errors: show playback error
 
@@ -372,10 +402,10 @@ The master playlist points at relative variant playlists, which point at relativ
 ### 6.4 Quality selection
 
 - The quality button appears when hls.js reports more than zero levels.
-- Menu options: **Auto**, **720p**, **360p**, **240p** (derived from actual manifest heights).
+- Menu options: **Auto**, **Full**, **1080p**, **720p**, **360p**, **240p** (derived from actual manifest heights; the tallest level is labelled `Full`).
 - Selecting a level sets `hls.currentLevel = index`.
 - Selecting Auto sets `hls.currentLevel = -1` to return to ABR.
-- Playback begins at 720p and can downgrade automatically if bandwidth falls.
+- Playback begins at the highest rendition — usually **Full** — and can downgrade automatically if bandwidth falls.
 
 ### 6.5 Video card UI
 
@@ -423,7 +453,7 @@ Returns every video, newest first, including queued/failed.
       "createdAt": 1792483339041,
       "posterUrl": "/api/hls/uuid/poster.jpg",
       "playbackUrl": "/api/hls/uuid/master.m3u8",
-      "variants": ["240p", "360p", "720p"]
+      "variants": ["240p", "360p", "720p", "1080p", "full"]
     }
   ]
 }
@@ -565,6 +595,7 @@ A 1 GB upload therefore does not consume 1 GB of server RAM, and a 100 MB video 
 | `DATA_DIR` | `./data` | SQLite directory |
 | `MAX_UPLOAD_MB` | `300` | upload limit |
 | `TRANSCODE_CONCURRENCY` | `1` | parallel ffmpeg jobs |
+| `MAX_RENDITION_HEIGHT` | `2160` | cap for the full-resolution rendition (`0` = uncapped) |
 | `FFMPEG_PATH` | bundled | override ffmpeg |
 | `FFPROBE_PATH` | bundled | override ffprobe |
 
@@ -575,6 +606,7 @@ A 1 GB upload therefore does not consume 1 GB of server RAM, and a 100 MB video 
 ```bash
 npm install
 npm run seed      # optional demo clips
+npm run reencode  # optional: re-run the transcode pipeline for stored videos
 npm run dev       # API :8787 + Vite :5173
 ```
 
@@ -588,10 +620,10 @@ npm start         # serves dist + API on :8787
 
 - Upload via curl → `queued → processing → ready`
 - All three playlists and segments generated
-- Master playlist resolutions: `136x240`, `202x360`, `406x720` for portrait
+- Master playlist resolutions for a 1080×1920 portrait source: `136x240`, `202x360`, `406x720`, `608x1080`, `1080x1920` (full)
 - HTTP MIME types and cache headers correct
 - Browser upload through the real dropzone
-- Feed autoplays at 720p (`406x720` decoded)
+- Feed autoplays at the top rendition (`full`, `1080x1920` decoded for portrait sources)
 - Swiping pauses the previous video and starts the next
 - Manual switch to 360p changes decoded size to `202x360`
 - Silent landscape video (`640x360`, no audio) encodes correctly
@@ -644,7 +676,7 @@ User        Browser                   Express                 SQLite       ffmpe
  │            │ GET variant + segments  │                       │             │
  │            ├────────────────────────►│                       │             │
  │            │ ◄──── HLS chunks ───────┤                       │             │
- │            │ hls.js plays 720p       │                       │             │
+ │            │ hls.js starts on Full    │                       │             │
  │            │ ABR/manual switch       │                       │             │
 ```
 

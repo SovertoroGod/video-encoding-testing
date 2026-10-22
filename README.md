@@ -1,10 +1,10 @@
 # ClipLoop
 
-Upload a video once and stream it in a TikTok-style vertical feed, with **240p / 360p / 720p** adaptive HLS playback.
+Upload a video once and stream it in a TikTok-style vertical feed, with **240p / 360p / 720p / 1080p and full resolution** adaptive HLS playback.
 
 - Vertical, snap-scrolling feed with autoplay, tap to pause, progress seek, mute, likes and share links
-- Automatic quality menu (`Auto / 720p / 360p / 240p`) driven by HLS.js
-- One ffmpeg pass produces all three renditions plus a master playlist and poster
+- Automatic quality menu (`Auto / Full / 1080p / 720p / 360p / 240p`) driven by HLS.js
+- One ffmpeg pass produces all renditions plus a master playlist and poster
 - Upload progress, live encoding progress, retry, delete and a media library
 - Local-first: SQLite metadata + files on disk, no cloud account required
 
@@ -70,18 +70,23 @@ This gives the same "buffered" playback behavior, safely.
 
 ### Encoding ladder
 
+The ladder is computed per upload from the probed source dimensions.
+
 | Rendition | Video | Audio | Scale rule |
 | --- | --- | --- | --- |
 | 240p | ~400 kbps H.264 | 64 kbps AAC | height 240, width auto |
 | 360p | ~900 kbps H.264 | 96 kbps AAC | height 360, width auto |
 | 720p | ~2500 kbps H.264 | 128 kbps AAC | height 720, width auto |
+| 1080p | ~4500 kbps H.264 | 160 kbps AAC | height 1080, width auto |
+| Full | source bitrate (CRF 20) | ~192 kbps AAC | exact source resolution, capped by `MAX_RENDITION_HEIGHT` |
 
 - H.264 `main` profile, `yuv420p`, AAC — broad browser support
 - 4-second segments with forced keyframes at segment boundaries
 - Portrait, landscape, rotation metadata and videos without audio are handled
-- ffmpeg runs one decode pass and splits into three scaled/encoded outputs
-- Playback starts at 720p, then ABR can downgrade if bandwidth drops
-- If the source is smaller than a rendition, that rendition is upscaled
+- ffmpeg runs one decode pass and splits into scaled/encoded outputs
+- The `Full` rendition is encoded at the source resolution with a constant-quality target (CRF 20) at ~1.2× the source bitrate, so nothing is downscaled below what the upload contains
+- Fixed rungs are only produced when their height is smaller than the source height; nothing is ever upscaled
+- Playback starts at the highest rendition (usually `Full`), then ABR can downgrade if bandwidth drops
 
 ### Storage layout
 
@@ -93,7 +98,9 @@ storage/
     ├── poster.jpg
     ├── 240p/index.m3u8 + segment_*.ts
     ├── 360p/index.m3u8 + segment_*.ts
-    └── 720p/index.m3u8 + segment_*.ts
+    ├── 720p/index.m3u8 + segment_*.ts
+    ├── 1080p/index.m3u8 + segment_*.ts
+    └── full/index.m3u8 + segment_*.ts
 data/app.db                             SQLite metadata
 ```
 
@@ -142,6 +149,7 @@ Environment variables (all optional):
 | `DATA_DIR` | `./data` | SQLite database directory |
 | `MAX_UPLOAD_MB` | `300` | Per-file upload limit |
 | `TRANSCODE_CONCURRENCY` | `1` | Parallel ffmpeg jobs |
+| `MAX_RENDITION_HEIGHT` | `2160` | Cap for the full-resolution rendition (source height up to 2160p; `0` = uncapped) |
 | `FFMPEG_PATH` | bundled | Override ffmpeg binary |
 | `FFPROBE_PATH` | bundled | Override ffprobe binary |
 
@@ -157,6 +165,7 @@ In development the web app runs on `5173`; set `PORT` to change the API and upda
 | `npm run build` | Build the frontend to `dist/` |
 | `npm start` | Serve `dist/` + API from Express |
 | `npm run seed` | Generate and encode demo clips |
+| `npm run reencode` | Re-run the transcode pipeline over stored videos |
 | `npm run typecheck` | TypeScript check |
 
 ## Notes and limits

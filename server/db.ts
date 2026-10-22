@@ -21,6 +21,8 @@ export interface VideoRow {
   error: string | null
   views: number
   created_at: number
+  /** HLS rendition names produced for this video, e.g. ["240p","360p","720p","1080p","full"] */
+  variants: string | null
 }
 
 const db = new DatabaseSync(DB_PATH)
@@ -44,11 +46,19 @@ db.exec(`
     progress INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     views INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    variants TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_videos_created ON videos (created_at DESC);
 `)
+
+// Migration for databases created before the `variants` column existed.
+try {
+  db.exec('ALTER TABLE videos ADD COLUMN variants TEXT')
+} catch {
+  // Column already exists — ignore.
+}
 
 export function createVideo(input: {
   id: string
@@ -90,6 +100,7 @@ type Updatable = Pick<
   | 'height'
   | 'poster_path'
   | 'hls_path'
+  | 'variants'
 >
 
 export function updateVideo(id: string, patch: Partial<Updatable>): void {
